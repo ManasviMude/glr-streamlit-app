@@ -1,14 +1,12 @@
 import fitz
 import json
 import requests
-import os
-import tempfile
 from io import BytesIO
 from docx import Document
 import streamlit as st
 
-# === CONFIG ===
-OPENROUTER_API_KEY = "sk-60ccf40489f14035abeefff344ba33ba"  # Replace with your real key
+# ✅ Use secret for OpenRouter API key (set in Streamlit Cloud > Settings > Secrets)
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
 
 # === STEP 1: Extract PDF text ===
 def extract_pdf_text(uploaded_pdfs):
@@ -19,7 +17,7 @@ def extract_pdf_text(uploaded_pdfs):
                 combined_text += page.get_text()
     return combined_text
 
-# === STEP 2: Extract placeholders ===
+# === STEP 2: Extract placeholders from DOCX ===
 def extract_placeholders(docx_file):
     doc = Document(docx_file)
     placeholders = set()
@@ -29,10 +27,10 @@ def extract_placeholders(docx_file):
                 placeholders.add(word.strip("[]"))
     return list(placeholders)
 
-# === STEP 3: Call LLM API ===
+# === STEP 3: Call OpenRouter LLM ===
 def call_llm(pdf_text, placeholders):
     prompt = f"""
-You are an insurance claim processor. Extract values for the following placeholders:
+You are an insurance claim assistant. Extract values for the following placeholders:
 
 {placeholders}
 
@@ -41,8 +39,14 @@ Text:
 {pdf_text[:6000]}
 \"\"\"
 
-Respond with ONLY valid JSON.
-    """
+Return only valid JSON. Example:
+{{
+  "DATE_LOSS": "2024-11-13",
+  "INSURED_NAME": "Richard Daly",
+  ...
+}}
+"""
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -62,15 +66,15 @@ Respond with ONLY valid JSON.
         else:
             return {}
     except Exception as e:
-        st.warning(f"LLM failed: {e}")
+        st.warning(f"⚠️ LLM call failed: {e}")
         return {}
 
-# === MOCK fallback ===
+# === STEP 4: Fallback mock data ===
 def mock_data():
     return {
         "DATE_LOSS": "2024-11-13",
         "INSURED_NAME": "Richard Daly",
-        "MORTGAGE_CO": "Alacrity",
+        "MORTGAGE_CO": "Alacrity Mortgage",
         "INSURED_H_STREET": "123 Storm Ln",
         "INSURED_H_CITY": "San Antonio",
         "INSURED_H_STATE": "TX",
@@ -81,45 +85,45 @@ def mock_data():
         "MORTGAGEE": "Alacrity"
     }
 
-# === STEP 4: Fill DOCX placeholders ===
+# === STEP 5: Fill template ===
 def fill_template(docx_file, field_values):
     doc = Document(docx_file)
     for para in doc.paragraphs:
         for key, value in field_values.items():
             if f"[{key}]" in para.text:
                 para.text = para.text.replace(f"[{key}]", value)
-
-    temp_output = BytesIO()
-    doc.save(temp_output)
-    temp_output.seek(0)
-    return temp_output
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
 
 # === STREAMLIT APP ===
-st.set_page_config(page_title="GLR Report Filler", page_icon="📝")
-st.title("📄 GLR Pipeline - Insurance Auto Filler")
+st.set_page_config(page_title="GLR Pipeline App", page_icon="📄")
+st.title("📄 GLR Pipeline - Auto Fill Insurance Report")
 
 template_file = st.file_uploader("Upload Template (.docx)", type=["docx"])
 pdf_files = st.file_uploader("Upload Photo Reports (.pdf)", type=["pdf"], accept_multiple_files=True)
 
 if st.button("Process"):
     if not template_file or not pdf_files:
-        st.error("Please upload both the template and at least one photo report.")
+        st.error("Please upload both the DOCX template and at least one PDF report.")
     else:
-        with st.spinner("Extracting text..."):
+        with st.spinner("📄 Reading photo reports..."):
             text = extract_pdf_text(pdf_files)
 
-        with st.spinner("Reading placeholders..."):
+        with st.spinner("🔍 Extracting placeholders from template..."):
             placeholders = extract_placeholders(template_file)
 
-        with st.spinner("Calling LLM or using fallback..."):
-            result = call_llm(text, placeholders)
-            if not result:
-                result = mock_data()
+        with st.spinner("🤖 Calling LLM..."):
+            field_values = call_llm(text, placeholders)
+            if not field_values:
+                st.warning("⚠️ Falling back to mock data.")
+                field_values = mock_data()
 
-        st.success("✔️ Fields extracted!")
+        st.success("✅ Fields extracted and matched!")
 
-        with st.spinner("Filling template..."):
-            filled_doc = fill_template(template_file, result)
+        with st.spinner("📝 Filling the template..."):
+            filled_doc = fill_template(template_file, field_values)
 
         st.download_button(
             label="📥 Download Filled Report",
