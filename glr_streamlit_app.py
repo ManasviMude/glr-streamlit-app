@@ -8,7 +8,7 @@ from docx import Document
 import streamlit as st
 
 # === CONFIG ===
-OPENROUTER_API_KEY = "sk-60ccf40489f14035abeefff344ba33ba"  # Replace with your real key
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"] 
 
 # === STEP 1: Extract PDF text ===
 def extract_pdf_text(uploaded_pdfs):
