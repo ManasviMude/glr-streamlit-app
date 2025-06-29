@@ -6,20 +6,20 @@ from io import BytesIO
 from docx import Document
 import streamlit as st
 
-# === SECURELY LOAD API KEY ===
+# === CONFIG ===
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+
 if not OPENROUTER_API_KEY:
-    st.error("❌ OpenRouter API key not found. Add it in Streamlit > Settings > Secrets.")
+    st.error("❌ OpenRouter API key not found. Add it in Streamlit → Settings → Secrets.")
     st.stop()
 
-# Optional: required if your key is domain-locked (free keys)
-HTTP_REFERER = "https://your-app-name.streamlit.app"  # Replace with your deployed URL on Streamlit Cloud
+HTTP_REFERER = "https://your-app-name.streamlit.app"  # OPTIONAL: Your Streamlit Cloud app URL
 
-# === CLEAN TEXT TO REMOVE NON-UTF8 CHARACTERS ===
+# === STEP 1: Clean Unicode Text ===
 def clean_text(text):
     return text.encode("utf-8", "ignore").decode("utf-8")
 
-# === EXTRACT TEXT FROM PDF ===
+# === STEP 2: Extract PDF Text ===
 def extract_pdf_text(uploaded_pdfs):
     combined_text = ""
     for file in uploaded_pdfs:
@@ -28,7 +28,7 @@ def extract_pdf_text(uploaded_pdfs):
                 combined_text += page.get_text()
     return clean_text(combined_text)
 
-# === EXTRACT PLACEHOLDERS FROM DOCX TEMPLATE ===
+# === STEP 3: Extract Placeholders from .docx Template ===
 def extract_placeholders(docx_file):
     doc = Document(docx_file)
     placeholders = set()
@@ -38,7 +38,7 @@ def extract_placeholders(docx_file):
                 placeholders.add(word.strip("[]"))
     return list(placeholders)
 
-# === CALL LLM TO FILL PLACEHOLDER VALUES ===
+# === STEP 4: Call LLM API to Fill Fields ===
 def call_llm(pdf_text, placeholders):
     prompt = f"""
 You are an insurance claim assistant. Extract values for the following placeholders:
@@ -50,19 +50,17 @@ PDF Text:
 {pdf_text[:6000]}
 \"\"\"
 
-Return ONLY valid JSON. Example:
+Return ONLY valid JSON in this format:
 {{
   "DATE_LOSS": "2024-11-13",
   "INSURED_NAME": "Richard Daly",
-  "MORTGAGE_CO": "Alacrity Mortgage",
   ...
 }}
 """
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": HTTP_REFERER  # Optional but good if your key is domain-locked
+        "HTTP-Referer": HTTP_REFERER
     }
 
     body = {
@@ -71,23 +69,19 @@ Return ONLY valid JSON. Example:
     }
 
     try:
-        body_json = json.dumps(body, ensure_ascii=False).encode("utf-8")  # ✅ proper encoding
-        res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            data=body_json
-        )
+        body_json = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, data=body_json)
         res.raise_for_status()
         data = res.json()
         raw_output = data["choices"][0]["message"]["content"]
         return json.loads(raw_output)
     except requests.exceptions.HTTPError as e:
-        st.error(f"HTTP {res.status_code} error: {res.text}")
+        st.error(f"❌ OpenRouter HTTP Error: {res.status_code} - {res.text}")
     except Exception as e:
-        st.error(f"LLM call failed: {e}")
+        st.error(f"❌ LLM call failed: {e}")
     return {}
 
-# === FALLBACK MOCK DATA ===
+# === STEP 5: Mock Fallback Data ===
 def mock_data():
     return {
         "DATE_LOSS": "2024-11-13",
@@ -103,7 +97,7 @@ def mock_data():
         "MORTGAGEE": "Alacrity"
     }
 
-# === FILL THE DOCX TEMPLATE WITH VALUES ===
+# === STEP 6: Fill DOCX Template with Values ===
 def fill_template(docx_file, field_values):
     doc = Document(docx_file)
     for para in doc.paragraphs:
@@ -115,37 +109,38 @@ def fill_template(docx_file, field_values):
     output.seek(0)
     return output
 
-# === STREAMLIT WEB APP ===
-st.set_page_config(page_title="GLR Report Filler", page_icon="📝")
-st.title("📄 GLR Pipeline - Auto-Fill Insurance Template")
+# === STREAMLIT INTERFACE ===
+st.set_page_config(page_title="GLR Report Filler", page_icon="📄")
+st.title("📄 GLR Pipeline - Insurance Auto Filler")
 
 template_file = st.file_uploader("Upload Template (.docx)", type=["docx"])
 pdf_files = st.file_uploader("Upload Photo Reports (.pdf)", type=["pdf"], accept_multiple_files=True)
 
 if st.button("Process"):
     if not template_file or not pdf_files:
-        st.error("Please upload both a DOCX template and at least one PDF report.")
-    else:
-        with st.spinner("🔍 Extracting text from PDFs..."):
-            pdf_text = extract_pdf_text(pdf_files)
+        st.error("Please upload both the DOCX template and at least one PDF.")
+        st.stop()
 
-        with st.spinner("🔎 Detecting placeholders from template..."):
-            placeholders = extract_placeholders(template_file)
+    with st.spinner("🔍 Extracting text from PDFs..."):
+        pdf_text = extract_pdf_text(pdf_files)
 
-        with st.spinner("🤖 Calling LLM..."):
-            field_values = call_llm(pdf_text, placeholders)
-            if not field_values:
-                st.warning("⚠️ LLM failed. Using mock data instead.")
-                field_values = mock_data()
+    with st.spinner("🧠 Extracting placeholders..."):
+        placeholders = extract_placeholders(template_file)
 
-        st.success("✅ Fields extracted and matched!")
+    with st.spinner("🤖 Calling LLM to fill values..."):
+        field_values = call_llm(pdf_text, placeholders)
+        if not field_values:
+            st.warning("⚠️ LLM failed, using mock data instead.")
+            field_values = mock_data()
 
-        with st.spinner("📝 Filling in template..."):
-            filled_doc = fill_template(template_file, field_values)
+    st.success("✅ Fields extracted successfully!")
 
-        st.download_button(
-            label="📥 Download Filled Report",
-            data=filled_doc,
-            file_name="filled_report.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    with st.spinner("📝 Filling template..."):
+        filled_doc = fill_template(template_file, field_values)
+
+    st.download_button(
+        label="📥 Download Filled Report",
+        data=filled_doc,
+        file_name="filled_report.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
