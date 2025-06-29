@@ -30,36 +30,49 @@ def extract_placeholders(docx_file):
                 ph.add(w.strip("[]"))
     return list(ph)
 
+import json
+
 def call_llm(pdf_text, placeholders):
     prompt = f"""
-You are an insurance claim assistant.  Extract values for: {placeholders}
+You are an insurance claim assistant. Extract values for the following placeholders:
 
-Text:
-\"\"\"{pdf_text[:6000]}\"\"\"
+{placeholders}
+
+PDF Text:
+\"\"\"
+{pdf_text[:6000]}
+\"\"\"
 
 Return ONLY valid JSON.
 """
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": HTTP_REFERER    # <‑‑ add if your key is domain‑locked
+        "HTTP-Referer": HTTP_REFERER
     }
+
     body = {
         "model": "mistralai/mixtral-8x7b",
         "messages": [{"role": "user", "content": prompt}]
     }
+
     try:
-        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                          headers=headers, json=body, timeout=60)
-        r.raise_for_status()
-        data = r.json()
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8")  # 💡 This forces correct encoding
+        )
+        res.raise_for_status()
+        data = res.json()
         raw = data["choices"][0]["message"]["content"]
         return json.loads(raw)
     except requests.exceptions.HTTPError as e:
-        st.error(f"OpenRouter error ({r.status_code}): {r.text}")
+        st.error(f"OpenRouter error ({res.status_code}): {res.text}")
     except Exception as e:
         st.error(f"LLM call failed: {e}")
-    return {}   # fall back to mock if anything goes wrong
+    return {}
+
 
 def mock_values():
     return {
