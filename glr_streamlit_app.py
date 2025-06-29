@@ -59,9 +59,11 @@ Return ONLY valid JSON.
 
     try:
         res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8")  # 💡 This forces correct encoding
+    "https://openrouter.ai/api/v1/chat/completions",
+    headers=headers,
+    json=body
+)
+
         )
         res.raise_for_status()
         data = res.json()
