@@ -1,129 +1,112 @@
-import fitz
-import json
-import requests
-import os
-import tempfile
+import fitz, json, requests, os
 from io import BytesIO
 from docx import Document
 import streamlit as st
 
-# === CONFIG ===
-OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"] 
+# ▸ 1 – Get the key safely
+OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    st.error("❌  OpenRouter API key not found.  Add it in Settings ➜ Secrets.")
+    st.stop()
 
-# === STEP 1: Extract PDF text ===
+# ▸ 2 – Tell OpenRouter where the call is coming from (use your own URL in prod)
+HTTP_REFERER = "https://your‑app‑name.streamlit.app"
+
+# ---------- helper functions ----------
 def extract_pdf_text(uploaded_pdfs):
-    combined_text = ""
-    for file in uploaded_pdfs:
-        with fitz.open(stream=file.read(), filetype="pdf") as doc:
-            for page in doc:
-                combined_text += page.get_text()
-    return combined_text
+    txt = ""
+    for f in uploaded_pdfs:
+        with fitz.open(stream=f.read(), filetype="pdf") as doc:
+            for p in doc:
+                txt += p.get_text()
+    return txt
 
-# === STEP 2: Extract placeholders ===
 def extract_placeholders(docx_file):
     doc = Document(docx_file)
-    placeholders = set()
+    ph = set()
     for para in doc.paragraphs:
-        for word in para.text.split():
-            if word.startswith("[") and word.endswith("]"):
-                placeholders.add(word.strip("[]"))
-    return list(placeholders)
+        for w in para.text.split():
+            if w.startswith("[") and w.endswith("]"):
+                ph.add(w.strip("[]"))
+    return list(ph)
 
-# === STEP 3: Call LLM API ===
 def call_llm(pdf_text, placeholders):
     prompt = f"""
-You are an insurance claim processor. Extract values for the following placeholders:
-
-{placeholders}
+You are an insurance claim assistant.  Extract values for: {placeholders}
 
 Text:
-\"\"\"
-{pdf_text[:6000]}
-\"\"\"
+\"\"\"{pdf_text[:6000]}\"\"\"
 
-Respond with ONLY valid JSON.
-    """
+Return ONLY valid JSON.
+"""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": HTTP_REFERER    # <‑‑ add if your key is domain‑locked
     }
-
     body = {
         "model": "mistralai/mixtral-8x7b",
         "messages": [{"role": "user", "content": prompt}]
     }
-
     try:
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
-        res.raise_for_status()
-        data = res.json()
-        if 'choices' in data:
-            return json.loads(data['choices'][0]['message']['content'])
-        else:
-            return {}
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                          headers=headers, json=body, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        raw = data["choices"][0]["message"]["content"]
+        return json.loads(raw)
+    except requests.exceptions.HTTPError as e:
+        st.error(f"OpenRouter error ({r.status_code}): {r.text}")
     except Exception as e:
-        st.warning(f"LLM failed: {e}")
-        return {}
+        st.error(f"LLM call failed: {e}")
+    return {}   # fall back to mock if anything goes wrong
 
-# === MOCK fallback ===
-def mock_data():
+def mock_values():
     return {
-        "DATE_LOSS": "2024-11-13",
+        "DATE_LOSS": "2024‑11‑13",
         "INSURED_NAME": "Richard Daly",
         "MORTGAGE_CO": "Alacrity",
-        "INSURED_H_STREET": "123 Storm Ln",
-        "INSURED_H_CITY": "San Antonio",
+        "INSURED_H_STREET": "123 Storm Ln",
+        "INSURED_H_CITY": "San Antonio",
         "INSURED_H_STATE": "TX",
         "INSURED_H_ZIP": "78265",
-        "DATE_INSPECTED": "2024-11-14",
-        "TOL_CODE": "wind",
-        "DATE_RECEIVED": "2024-11-15",
-        "MORTGAGEE": "Alacrity"
+        "DATE_INSPECTED": "2024‑11‑14"
     }
 
-# === STEP 4: Fill DOCX placeholders ===
-def fill_template(docx_file, field_values):
-    doc = Document(docx_file)
-    for para in doc.paragraphs:
-        for key, value in field_values.items():
-            if f"[{key}]" in para.text:
-                para.text = para.text.replace(f"[{key}]", value)
+def fill_template(src_docx, values):
+    doc = Document(src_docx)
+    for p in doc.paragraphs:
+        for k, v in values.items():
+            p.text = p.text.replace(f"[{k}]", v)
+    out = BytesIO()
+    doc.save(out)
+    out.seek(0)
+    return out
+# ---------- Streamlit UI ----------
+st.set_page_config("GLR Filler", "📝")
+st.title("📄  GLR Pipeline – Auto‑Fill Insurance Template")
 
-    temp_output = BytesIO()
-    doc.save(temp_output)
-    temp_output.seek(0)
-    return temp_output
-
-# === STREAMLIT APP ===
-st.set_page_config(page_title="GLR Report Filler", page_icon="📝")
-st.title("📄 GLR Pipeline - Insurance Auto Filler")
-
-template_file = st.file_uploader("Upload Template (.docx)", type=["docx"])
-pdf_files = st.file_uploader("Upload Photo Reports (.pdf)", type=["pdf"], accept_multiple_files=True)
+tpl = st.file_uploader("Template (.docx)", type=["docx"])
+pdfs = st.file_uploader("Photo reports (.pdf)", type=["pdf"], accept_multiple_files=True)
 
 if st.button("Process"):
-    if not template_file or not pdf_files:
-        st.error("Please upload both the template and at least one photo report.")
-    else:
-        with st.spinner("Extracting text..."):
-            text = extract_pdf_text(pdf_files)
+    if not tpl or not pdfs:
+        st.error("Upload both a template and at least one PDF.")
+        st.stop()
 
-        with st.spinner("Reading placeholders..."):
-            placeholders = extract_placeholders(template_file)
+    with st.spinner("Extracting PDF text…"):
+        text = extract_pdf_text(pdfs)
 
-        with st.spinner("Calling LLM or using fallback..."):
-            result = call_llm(text, placeholders)
-            if not result:
-                result = mock_data()
+    with st.spinner("Finding placeholders…"):
+        ph = extract_placeholders(tpl)
 
-        st.success("✔️ Fields extracted!")
+    with st.spinner("Calling LLM…"):
+        values = call_llm(text, ph) or mock_values()
 
-        with st.spinner("Filling template..."):
-            filled_doc = fill_template(template_file, result)
+    st.success("Placeholders filled!")
+    filled = fill_template(tpl, values)
 
-        st.download_button(
-            label="📥 Download Filled Report",
-            data=filled_doc,
-            file_name="filled_report.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    st.download_button("📥 Download filled report",
+                       data=filled,
+                       file_name="filled_report.docx",
+                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
